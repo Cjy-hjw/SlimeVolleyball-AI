@@ -1,0 +1,368 @@
+<html><head>
+<title>Slime Volleyball: Human vs AI</title>
+<style>
+    body { background-color: #202020; color: white; font-family: "Arial", sans-serif; text-align: center; margin: 0; padding: 0; overflow: hidden; }
+    canvas {
+        margin-top: 20px;
+        box-shadow: 0 0 30px rgba(0,0,0,0.8);
+        border-radius: 4px;
+        cursor: none;
+    }
+    h1 { margin: 15px 0 5px 0; font-size: 28px; text-shadow: 2px 2px 4px #000; letter-spacing: 1px; }
+    p { color: #aaa; font-size: 14px; margin-top: 5px; }
+    .status { color: #ff0; font-weight: bold; margin-bottom: 5px; height: 20px; font-size: 14px; }
+    .scoreboard {
+        position: absolute;
+        width: 750px;
+        left: 50%;
+        margin-left: -375px;
+        top: 80px;
+        pointer-events: none;
+        display: flex;
+        justify-content: space-between;
+        padding: 0 40px;
+        box-sizing: border-box;
+    }
+    .score-box {
+        background: rgba(0, 0, 0, 0.3);
+        padding: 5px 15px;
+        border-radius: 15px;
+        color: white;
+        font-weight: bold;
+        font-size: 24px;
+        text-shadow: 1px 1px 2px black;
+    }
+</style>
+<script type="text/javascript">
+  // ========================================================
+  // 1. INPUT HANDLING
+  // ========================================================
+  var keysDown = {};
+  window.addEventListener("keydown", function(e) {
+      keysDown[e.keyCode] = true;
+      keysDown[e.code] = true;
+      if([32, 37, 38, 39, 40].indexOf(e.keyCode) > -1) { e.preventDefault(); }
+  });
+  window.addEventListener("keyup", function(e) {
+      delete keysDown[e.keyCode];
+      delete keysDown[e.code];
+  });
+
+  // ========================================================
+  // 2. PHYSICS ENGINE (LEGACY)
+  // ========================================================
+  var gameWidth = 1000;
+  var gameHeight = 1000;
+  var MAX_VELOCITY_X = 15;
+  var MAX_VELOCITY_Y = 22;
+  var GRAVITY = 2;
+  var BALL_GRAVITY = 1;
+  var JUMP_VELOCITY = 31;
+  var FUDGE = 5;
+
+  var ball;
+  var slimeLeft;
+  var slimeRight;
+  var slimeLeftScore = 0;
+  var slimeRightScore = 0;
+
+  var p1Action = [0, 0, 0];
+  var p2Action = [0, 0, 0];
+
+  var socket;
+  var connected = false;
+  var ctx;
+
+  // Images
+  var imgSlimeRed = new Image();
+  var imgSlimeGreen = new Image();
+  var imgBall = new Image();
+  var imgBack = new Image();
+
+  // Image Loading State
+  var imagesLoaded = { red: false, green: false, ball: false, back: false };
+
+  imgSlimeRed.src = 'slime175red.png';
+  imgSlimeRed.onload = function() { imagesLoaded.red = true; };
+
+  imgSlimeGreen.src = 'slime175green.png';
+  imgSlimeGreen.onload = function() { imagesLoaded.green = true; };
+
+  imgBall.src = 'vball.png';
+  imgBall.onload = function() { imagesLoaded.ball = true; };
+
+  imgBack.src = 'cave.jpg'; // Or sky2.jpg
+  imgBack.onload = function() { imagesLoaded.back = true; };
+
+
+  function updateSlimeVelocities(s, moveLeft, moveRight, jump) {
+    if(moveLeft) {
+      if(moveRight) s.velocityX = 0;
+      else s.velocityX = -8;
+    } else if(moveRight) {
+      s.velocityX = 8;
+    } else {
+      s.velocityX = 0;
+    }
+    if(jump && s.y == 0) s.velocityY = JUMP_VELOCITY;
+  }
+
+  function updateSlime(s, leftLimit, rightLimit) {
+    if(s.velocityX != 0) {
+      s.x += s.velocityX;
+      if(s.x < leftLimit) s.x = leftLimit;
+      else if(s.x > rightLimit) s.x = rightLimit;
+    }
+    if(s.velocityY != 0 || s.y > 0) {
+      s.velocityY -= GRAVITY;
+      s.y += s.velocityY;
+      if(s.y < 0) { s.y = 0; s.velocityY = 0; }
+    }
+  }
+
+  function collisionBallSlime(s) {
+    var dx = 2 * (ball.x - s.x);
+    var dy = ball.y - s.y;
+    var dist = Math.trunc(Math.sqrt(dx * dx + dy * dy));
+    var dVelocityX = ball.velocityX - s.velocityX;
+    var dVelocityY = ball.velocityY - s.velocityY;
+
+    if(dy > 0 && dist < ball.radius + s.radius && dist > FUDGE) {
+      ball.x = s.x + Math.trunc(Math.trunc((s.radius + ball.radius) / 2) * dx / dist);
+      ball.y = s.y + Math.trunc((s.radius + ball.radius) * dy / dist);
+      var something = Math.trunc((dx * dVelocityX + dy * dVelocityY) / dist);
+
+      if(something <= 0) {
+        ball.velocityX += Math.trunc(s.velocityX - 2 * dx * something / dist);
+        ball.velocityY += Math.trunc(s.velocityY - 2 * dy * something / dist);
+        if(ball.velocityX < -MAX_VELOCITY_X) ball.velocityX = -MAX_VELOCITY_X;
+        else if(ball.velocityX > MAX_VELOCITY_X) ball.velocityX = MAX_VELOCITY_X;
+        if(ball.velocityY < -MAX_VELOCITY_Y) ball.velocityY = -MAX_VELOCITY_Y;
+        else if(ball.velocityY > MAX_VELOCITY_Y) ball.velocityY = MAX_VELOCITY_Y;
+      }
+    }
+  }
+
+  function updateBall() {
+    ball.velocityY += -BALL_GRAVITY;
+    if(ball.velocityY < -MAX_VELOCITY_Y) ball.velocityY = -MAX_VELOCITY_Y;
+
+    ball.x += ball.velocityX;
+    ball.y += ball.velocityY;
+
+    collisionBallSlime(slimeLeft);
+    collisionBallSlime(slimeRight);
+
+    if (ball.x < 15) { ball.x = 15; ball.velocityX = -ball.velocityX; }
+    else if(ball.x > 985){ ball.x = 985; ball.velocityX = -ball.velocityX; }
+
+    // Net Collision
+    if (ball.x > 480 && ball.x < 520 && ball.y < 140) {
+      if (ball.velocityY < 0 && ball.y > 130) {
+        ball.velocityY *= -1; ball.y = 130;
+      } else if (ball.x < 500) {
+        ball.x = 480; ball.velocityX = ball.velocityX >= 0 ? -ball.velocityX : ball.velocityX;
+      } else {
+        ball.x = 520; ball.velocityX = ball.velocityX <= 0 ? -ball.velocityX : ball.velocityX;
+      }
+    }
+
+    if(ball.y < 0) {
+      if(ball.x > 500) { slimeLeftScore++; initRound(true); }
+      else { slimeRightScore++; initRound(false); }
+      updateScoreDisplay();
+    }
+  }
+
+  function updateFrame() {
+    var p1Left = keysDown[65] || keysDown[37];
+    var p1Right = keysDown[68] || keysDown[39];
+    var p1Jump = keysDown[87] || keysDown[38] || keysDown[32];
+
+    updateSlimeVelocities(slimeLeft, p1Left, p1Right, p1Jump);
+    updateSlimeVelocities(slimeRight, p2Action[0], p2Action[1], p2Action[2]);
+
+    updateSlime(slimeLeft, 50, 445);
+    updateSlime(slimeRight, 555, 950);
+
+    updateBall();
+  }
+
+  function initRound(leftWon) {
+    ball.x = leftWon ? 200 : 800;
+    ball.y = 400;
+    ball.velocityX = 0;
+    ball.velocityY = 0;
+
+    slimeLeft.x = 200; slimeLeft.y = 0; slimeLeft.velocityX = 0; slimeLeft.velocityY = 0;
+    slimeRight.x = 800; slimeRight.y = 0; slimeRight.velocityX = 0; slimeRight.velocityY = 0;
+  }
+
+  function updateScoreDisplay() {
+      document.getElementById('score-p1').innerText = "Player: " + slimeLeftScore;
+      document.getElementById('score-p2').innerText = "AI: " + slimeRightScore;
+  }
+
+  // ========================================================
+  // 3. RENDERING (IMAGE SUPPORT)
+  // ========================================================
+  function render() {
+    // 1. Background
+    if (imagesLoaded.back) {
+        ctx.drawImage(imgBack, 0, 0, 750, 375);
+    } else {
+        // Fallback Sky
+        var grad = ctx.createLinearGradient(0, 0, 0, 300);
+        grad.addColorStop(0, "#0077ff");
+        grad.addColorStop(1, "#87ceeb");
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, 750, 300);
+    }
+
+    // 2. Ground (Only if no image, or draw over bottom part)
+    if (!imagesLoaded.back) {
+        ctx.fillStyle = "#ca6";
+        ctx.fillRect(0, 300, 750, 75);
+    }
+
+    // 3. Net
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(373, 270, 4, 35);
+
+    // Scale Helpers
+    var scaleX = 750/1000;
+    var scaleY = 300/1000;
+    function toScreenX(x) { return x * scaleX; }
+    function toScreenY(y) { return 300 - (y * scaleY); }
+
+    // 4. Ball
+    if (imagesLoaded.ball) {
+        // Rotate ball based on X position (simple visual effect)
+        ctx.save();
+        ctx.translate(toScreenX(ball.x), toScreenY(ball.y));
+        ctx.rotate(ball.x / 20); // Rotation
+        ctx.drawImage(imgBall, -12, -12, 24, 24);
+        ctx.restore();
+    } else {
+        ctx.fillStyle = "#ff0";
+        ctx.beginPath();
+        ctx.arc(toScreenX(ball.x), toScreenY(ball.y), 10, 0, Math.PI*2);
+        ctx.fill();
+        ctx.fillStyle = "#fff";
+        ctx.beginPath();
+        ctx.arc(toScreenX(ball.x) - 3, toScreenY(ball.y) - 3, 3, 0, Math.PI*2);
+        ctx.fill();
+    }
+
+    // 5. Slime 1 (Red)
+    var r = 25; // Screen radius
+    if (imagesLoaded.red) {
+        // Image is a semi-circle, draw it
+        ctx.drawImage(imgSlimeRed, toScreenX(slimeLeft.x) - 38, toScreenY(slimeLeft.y) - 38);
+    } else {
+        ctx.fillStyle = "#f00";
+        ctx.beginPath();
+        ctx.arc(toScreenX(slimeLeft.x), toScreenY(slimeLeft.y), r, Math.PI, Math.PI*2);
+        ctx.fill();
+        // Eye (Fallback)
+        var eyeX = slimeLeft.x + (25);
+        var eyeY = slimeLeft.y + 60;
+        ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(toScreenX(eyeX), toScreenY(eyeY), 5, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = "#000"; ctx.beginPath(); ctx.arc(toScreenX(eyeX+2), toScreenY(eyeY), 2, 0, Math.PI*2); ctx.fill();
+    }
+
+    // 6. Slime 2 (Green)
+    if (imagesLoaded.green) {
+        ctx.drawImage(imgSlimeGreen, toScreenX(slimeRight.x) - 38, toScreenY(slimeRight.y) - 38);
+    } else {
+        ctx.fillStyle = "#0f0";
+        ctx.beginPath();
+        ctx.arc(toScreenX(slimeRight.x), toScreenY(slimeRight.y), r, Math.PI, Math.PI*2);
+        ctx.fill();
+        // Eye (Fallback)
+        var eyeX2 = slimeRight.x - (25);
+        var eyeY2 = slimeRight.y + 60;
+        ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(toScreenX(eyeX2), toScreenY(eyeY2), 5, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = "#000"; ctx.beginPath(); ctx.arc(toScreenX(eyeX2-2), toScreenY(eyeY2), 2, 0, Math.PI*2); ctx.fill();
+    }
+  }
+
+  // ========================================================
+  // 4. MAIN LOOP & SOCKET
+  // ========================================================
+  function getParam(name) {
+    const params = new URLSearchParams(window.location.search);
+    return params.get(name);
+  }
+
+  function gameLoop() {
+    updateFrame();
+    render();
+
+    if (socket && socket.readyState === WebSocket.OPEN) {
+        var state = {
+            ballX: ball.x, ballY: ball.y, ballVx: ball.velocityX, ballVy: ball.velocityY,
+            slime1X: slimeLeft.x, slime1Y: slimeLeft.y, slime1Vx: slimeLeft.velocityX, slime1Vy: slimeLeft.velocityY,
+            slime2X: slimeRight.x, slime2Y: slimeRight.y, slime2Vx: slimeRight.velocityX, slime2Vy: slimeRight.velocityY,
+        };
+        socket.send(JSON.stringify(state));
+    }
+  }
+
+  function connectToPython() {
+    var port = getParam('port') || 8765;
+    socket = new WebSocket("ws://localhost:" + port);
+
+    socket.onopen = function() {
+        console.log("Connected to AI");
+        connected = true;
+        document.getElementById('status').innerText = "Status: Connected to AI";
+        document.getElementById('status').style.color = "#0f0";
+    };
+
+    socket.onmessage = function(event) {
+        var actions = JSON.parse(event.data);
+        if (Array.isArray(actions)) {
+            p2Action = actions;
+        }
+    };
+
+    socket.onclose = function() {
+        connected = false;
+        document.getElementById('status').innerText = "Status: Disconnected (Retrying...)";
+        document.getElementById('status').style.color = "#f00";
+        setTimeout(connectToPython, 1000);
+    };
+  }
+
+  function bodyload() {
+    var canvasEl = document.createElement("canvas");
+    canvasEl.width = 750; canvasEl.height = 375;
+    document.body.appendChild(canvasEl);
+    ctx = canvasEl.getContext("2d");
+
+    ball = { x:0, y:0, velocityX:0, velocityY:0, radius:25 };
+    slimeLeft = { x:0, y:0, velocityX:0, velocityY:0, radius:100 };
+    slimeRight = { x:0, y:0, velocityX:0, velocityY:0, radius:100 };
+
+    initRound(true);
+    updateScoreDisplay();
+    render();
+    connectToPython();
+
+    setInterval(gameLoop, 20);
+  }
+</script>
+</head>
+<body onload="bodyload()">
+    <h1>Slime Volleyball: Human vs AI</h1>
+    <div id="status" class="status">Status: Connecting...</div>
+
+    <div class="scoreboard">
+        <div id="score-p1" class="score-box" style="color: #ff6666;">Player: 0</div>
+        <div id="score-p2" class="score-box" style="color: #66ff66;">AI: 0</div>
+    </div>
+
+    <p>Controls: <b>WASD</b> or <b>Arrow Keys</b> to Move/Jump</p>
+</body>
+</html>
